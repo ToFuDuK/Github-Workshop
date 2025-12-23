@@ -1,196 +1,309 @@
 name: C# Homework Tests
 
+# pull_request_target kullanarak fork'lardan gelen PR'lara da yorum yazabiliyoruz
 on:
   pull_request_target:
     paths:
-      - 'homeworks/csharp-fundamentals/**'
+      - 'homeworks/csharp-fundamentals/**/submissions/**'
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  DOTNET_VERSION: '8.0.x'
 
 jobs:
-  test:
-    name: Validate & Test C# Submissions
+  validate-and-test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
+    name: Validate & Test C# Submissions
 
     steps:
-    - uses: actions/checkout@v4
-      with:
-        ref: ${{ github.event.pull_request.head.sha }}
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '8.0.x'
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
-    - name: Get Changed Files
-      id: changed-files
-      uses: tj-actions/changed-files@v41
-      with:
-        files: |
-          homeworks/csharp-fundamentals/**/submissions/*.cs
-
-    - name: Validate & Test All Problems
-      id: validate
-      run: |
-        # Get all changed files (space-separated)
-        ALL_FILES="${{ steps.changed-files.outputs.all_changed_files }}"
-        
-        if [ -z "$ALL_FILES" ]; then
-          echo "No submission files found."
-          echo "message=ℹ️ Ödev dosyası bulunamadı." >> $GITHUB_OUTPUT
-          exit 0
-        fi
-        
-        echo "Found files: $ALL_FILES"
-        
-        # Initialize results
-        TOTAL_SCORE=0
-        P1_SCORE=0
-        P2_SCORE=0
-        P3_SCORE=0
-        P4_SCORE=0
-        STUDENT_NO=""
-        RESULTS=""
-        HAS_ERROR=false
-        
-        # Process each file
-        for FILE in $ALL_FILES; do
-          echo "========================================"
-          echo "Processing: $FILE"
-          echo "========================================"
+      - name: Find Changed Files
+        id: changed-files
+        run: |
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
           
-          FILENAME=$(basename "$FILE")
-          DIRNAME=$(dirname "$FILE")
-          PROBLEM_DIR=$(dirname "$DIRNAME")
-          PROBLEM_NAME=$(basename "$PROBLEM_DIR")
+          echo "Base SHA: $BASE_SHA"
+          echo "Head SHA: $HEAD_SHA"
           
-          # Validate Filename Format: ProblemX_123456789.cs
-          if [[ ! "$FILENAME" =~ ^Problem[1-4]_[0-9]{9}\.cs$ ]]; then
-            echo "Invalid filename format: $FILENAME"
-            RESULTS="${RESULTS}\n❌ **$FILENAME:** Dosya adı formatı yanlış!"
-            HAS_ERROR=true
-            continue
-          fi
+          CHANGED_FILES=$(git diff --name-only $BASE_SHA $HEAD_SHA -- 'homeworks/csharp-fundamentals/**/submissions/*.cs' 2>/dev/null || echo "")
           
-          STUDENT_NO=$(echo "$FILENAME" | grep -oP '\d{9}')
-          PROBLEM_NUM=$(echo "$FILENAME" | grep -oP 'Problem\d')
-          PROBLEM_INDEX=$(echo "$PROBLEM_NUM" | grep -oP '\d')
-          
-          # Check directory
-          EXPECTED_DIR="problem-$PROBLEM_INDEX"
-          if [[ "$PROBLEM_NAME" != "$EXPECTED_DIR" ]]; then
-            echo "Wrong directory for $FILENAME"
-            RESULTS="${RESULTS}\n❌ **$PROBLEM_NUM:** Yanlış klasöre yüklendi!"
-            HAS_ERROR=true
-            continue
-          fi
-          
-          # Find test file
-          TEST_FILE="$PROBLEM_DIR/$PROBLEM_NUM.Tests.cs"
-          if [ ! -f "$TEST_FILE" ]; then
-            echo "Test file not found: $TEST_FILE"
-            RESULTS="${RESULTS}\n❌ **$PROBLEM_NUM:** Test dosyası bulunamadı!"
-            HAS_ERROR=true
-            continue
-          fi
-          
-          # Create temporary test project
-          echo "Creating test project for $PROBLEM_NUM..."
-          rm -rf TestProject
-          mkdir -p TestProject
-          cd TestProject
-          dotnet new console --force > /dev/null 2>&1
-          
-          # Copy files
-          cp "../$FILE" .
-          cp "../$TEST_FILE" .
-          rm -f Program.cs
-          
-          # Run tests
-          echo "Running tests for $PROBLEM_NUM..."
-          dotnet run -- "$FILENAME" > test_output.txt 2>&1
-          TEST_EXIT_CODE=$?
-          
-          cat test_output.txt
-          
-          # Parse score
-          SCORE=$(grep -oP "TOPLAM PUAN\s+│\s+\K[\d\.]+" test_output.txt || echo "0")
-          
-          cd ..
-          
-          echo "Score for $PROBLEM_NUM: $SCORE"
-          
-          # Store individual scores
-          case $PROBLEM_INDEX in
-            1) P1_SCORE=$SCORE ;;
-            2) P2_SCORE=$SCORE ;;
-            3) P3_SCORE=$SCORE ;;
-            4) P4_SCORE=$SCORE ;;
-          esac
-          
-          # Add to results
-          if [ $TEST_EXIT_CODE -eq 0 ]; then
-            RESULTS="${RESULTS}\n✅ **$PROBLEM_NUM:** $SCORE/25 puan"
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "any_changed=false" >> $GITHUB_OUTPUT
+            echo "Değişen C# submission dosyası bulunamadı."
           else
-            RESULTS="${RESULTS}\n⚠️ **$PROBLEM_NUM:** $SCORE/25 puan (bazı testler başarısız)"
-            HAS_ERROR=true
+            echo "any_changed=true" >> $GITHUB_OUTPUT
+            echo "all_changed_files<<EOF" >> $GITHUB_OUTPUT
+            echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "Değişen dosyalar:"
+            echo "$CHANGED_FILES"
           fi
-        done
-        
-        # Calculate total
-        TOTAL_SCORE=$(awk "BEGIN {print $P1_SCORE + $P2_SCORE + $P3_SCORE + $P4_SCORE}")
-        
-        # Cleanup
-        rm -rf TestProject
-        
-        # Build final message
-        MESSAGE="## � C# Ödev Sonuçları - Öğrenci: $STUDENT_NO
-        
-        | Problem | Puan |
-        |---------|------|
-        | Problem 1 | $P1_SCORE/25 |
-        | Problem 2 | $P2_SCORE/25 |
-        | Problem 3 | $P3_SCORE/25 |
-        | Problem 4 | $P4_SCORE/25 |
-        | **TOPLAM** | **$TOTAL_SCORE/100** |
-        
-        ### Detaylar
-        $(echo -e \"$RESULTS\")
-        
-        ---
-        TOPLAM SONUÇ: $TOTAL_SCORE / 100
-        Problem 1    $P1_SCORE/25
-        Problem 2    $P2_SCORE/25
-        Problem 3    $P3_SCORE/25
-        Problem 4    $P4_SCORE/25
-        "
-        
-        # Save outputs
-        echo "message<<EOF" >> $GITHUB_OUTPUT
-        echo "$MESSAGE" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
-        
-        if [ "$HAS_ERROR" = true ]; then
-          echo "status=failure" >> $GITHUB_OUTPUT
-        else
-          echo "status=success" >> $GITHUB_OUTPUT
-        fi
 
-    - name: Post Comment
-      uses: actions/github-script@v7
-      if: always() && steps.validate.outputs.message != ''
-      with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        script: |
-          const message = `${{ steps.validate.outputs.message }}`;
-          await github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: message
-          });
+      - name: Validate File Names
+        id: validate-files
+        if: steps.changed-files.outputs.any_changed == 'true'
+        run: |
+          echo "📋 Dosya Adı Kontrolü"
+          echo "===================="
+          
+          VALID=true
+          INVALID_FILES=""
+          VALID_FILES=""
+          
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            filename=$(basename "$file")
+            echo "Kontrol ediliyor: $filename"
+            
+            if [[ ! $filename =~ ^Problem[1-4]_[0-9]{9}\.cs$ ]]; then
+              echo "❌ HATA: $filename formatı yanlış!"
+              echo "   Beklenen: ProblemX_OGRENCI_NO.cs (9 haneli numara)"
+              INVALID_FILES="${INVALID_FILES}${filename}, "
+              VALID=false
+            else
+              echo "✅ Format doğru: $filename"
+              VALID_FILES="${VALID_FILES}${file}\n"
+            fi
+          done <<< "${{ steps.changed-files.outputs.all_changed_files }}"
+          
+          echo "valid_files<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$VALID_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          if [ "$VALID" = false ]; then
+            echo ""
+            echo "⚠️ Bazı dosya adları yanlış formatta!"
+            # Remove trailing comma and space
+            INVALID_FILES="${INVALID_FILES%, }"
+            echo "invalid_files=$INVALID_FILES" >> $GITHUB_OUTPUT
+            echo "valid=false" >> $GITHUB_OUTPUT
+          else
+            echo ""
+            echo "✅ Tüm dosya adları doğru formatta!"
+            echo "valid=true" >> $GITHUB_OUTPUT
+          fi
 
-    - name: Check Status
-      if: steps.validate.outputs.status == 'failure'
-      run: exit 1
+      - name: Run All Tests
+        id: run-tests
+        if: steps.changed-files.outputs.any_changed == 'true' && steps.validate-files.outputs.valid == 'true'
+        run: |
+          echo "🧪 Testler Başlıyor"
+          echo "==================="
+          
+          ALL_PASSED=true
+          TOTAL_SCORE=0
+          
+          # Create comment body file
+          echo "## 📊 C# Ödev Test Sonuçları" > /tmp/comment_body.md
+          echo "" >> /tmp/comment_body.md
+          echo "| Problem | Puan | Durum |" >> /tmp/comment_body.md
+          echo "|---------|------|-------|" >> /tmp/comment_body.md
+          
+          # Failed tests file
+          echo "" > /tmp/failed_tests.md
+          
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            
+            if [[ "$file" =~ problem-([1-4])/submissions/ ]]; then
+              problem_num="${BASH_REMATCH[1]}"
+              PROBLEM_DIR="homeworks/csharp-fundamentals/problem-${problem_num}"
+              filename=$(basename "$file")
+              
+              echo ""
+              echo "╔══════════════════════════════════════════════════╗"
+              echo "║  Problem $problem_num - $filename"
+              echo "╚══════════════════════════════════════════════════╝"
+              
+              # Create temp directory and setup project
+              TEMP_DIR=$(mktemp -d)
+              cd "$TEMP_DIR"
+              
+              # Create a new console project
+              dotnet new console -n TestProject -o . --force > /dev/null 2>&1
+              
+              # CRITICAL FIX: Remove auto-generated Program.cs
+              # (it contains "Hello, World!" and would be executed instead of tests)
+              rm -f Program.cs
+              
+              # Copy student submission (keeps original name for class reference)
+              cp "$GITHUB_WORKSPACE/$file" "./Problem${problem_num}.cs"
+              
+              # Copy test file AS Program.cs (it has Main method, becomes entry point)
+              cp "$GITHUB_WORKSPACE/$PROBLEM_DIR/Problem${problem_num}.Tests.cs" "./Program.cs"
+              
+              # Run tests
+              set +e
+              TEST_OUTPUT=$(dotnet run -- "$filename" 2>&1)
+              TEST_EXIT_CODE=$?
+              set -e
+              
+              echo "$TEST_OUTPUT"
+              
+              # Extract score from output (format: "TOPLAM PUAN      │  25.00 / 25.00 puan")
+              SCORE=$(echo "$TEST_OUTPUT" | grep -oP 'TOPLAM PUAN\s*│\s*\K[0-9]+\.?[0-9]*' | head -1 || echo "0")
+              [ -z "$SCORE" ] && SCORE="0"
+              
+              if [ "$TEST_EXIT_CODE" -eq 0 ]; then
+                STATUS="✅ Geçti"
+              else
+                STATUS="❌ Kaldı"
+                ALL_PASSED=false
+                
+                # Add failed tests to file
+                FAILS=$(echo "$TEST_OUTPUT" | grep "❌" | head -5 || true)
+                if [ -n "$FAILS" ]; then
+                  echo "### Problem ${problem_num} - Hatalar" >> /tmp/failed_tests.md
+                  echo '```' >> /tmp/failed_tests.md
+                  echo "$FAILS" >> /tmp/failed_tests.md
+                  echo '```' >> /tmp/failed_tests.md
+                  echo "" >> /tmp/failed_tests.md
+                fi
+              fi
+              
+              echo "| Problem ${problem_num} | ${SCORE}/25 | ${STATUS} |" >> /tmp/comment_body.md
+              
+              TOTAL_SCORE=$(echo "$TOTAL_SCORE + $SCORE" | bc)
+              
+              cd - > /dev/null
+              rm -rf "$TEMP_DIR"
+            fi
+          done <<< "${{ steps.validate-files.outputs.valid_files }}"
+          
+          echo "" >> /tmp/comment_body.md
+          echo "**Toplam Puan:** $TOTAL_SCORE / 100" >> /tmp/comment_body.md
+          echo "" >> /tmp/comment_body.md
+          
+          if [ "$ALL_PASSED" = true ]; then
+            echo "---" >> /tmp/comment_body.md
+            echo "🎉 **Tebrikler!** Tüm testler geçti. PR merge edilebilir." >> /tmp/comment_body.md
+          else
+            # Add failed tests details
+            if [ -s /tmp/failed_tests.md ]; then
+              echo "---" >> /tmp/comment_body.md
+              cat /tmp/failed_tests.md >> /tmp/comment_body.md
+            fi
+            echo "---" >> /tmp/comment_body.md
+            echo "❌ **PR merge edilemez.** Tüm testlerin geçmesi gerekiyor." >> /tmp/comment_body.md
+          fi
+          
+          echo "" >> /tmp/comment_body.md
+          echo "---" >> /tmp/comment_body.md
+          echo "*GitHub Workshop Bot* 🤖" >> /tmp/comment_body.md
+          
+          echo ""
+          echo "═══════════════════════════════════════════════════"
+          echo "📊 TOPLAM SONUÇ: $TOTAL_SCORE / 100 puan"
+          echo "═══════════════════════════════════════════════════"
+          
+          echo "total_score=$TOTAL_SCORE" >> $GITHUB_OUTPUT
+          echo "all_passed=$ALL_PASSED" >> $GITHUB_OUTPUT
+
+      - name: Generate Job Summary
+        if: always() && steps.changed-files.outputs.any_changed == 'true'
+        run: |
+          echo "## 📊 C# Ödev Test Sonuçları" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.validate-files.outputs.valid }}" = "false" ]; then
+            echo "### ❌ Dosya Adı Hatası" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Yanlış format: ${{ steps.validate-files.outputs.invalid_files }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Beklenen format:** ProblemX_OGRENCI_NO.cs (9 haneli numara)" >> $GITHUB_STEP_SUMMARY
+          elif [ -f /tmp/comment_body.md ]; then
+            cat /tmp/comment_body.md >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "📚 [GitHub Workshop Wiki](https://github.com/Furk4nBulut/Github-Workshop/wiki)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Post PR Comment - Success
+        if: always() && steps.changed-files.outputs.any_changed == 'true' && steps.validate-files.outputs.valid == 'true' && steps.run-tests.outputs.all_passed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const commentBody = fs.readFileSync('/tmp/comment_body.md', 'utf8');
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+
+      - name: Post PR Comment - File Name Error
+        if: always() && steps.changed-files.outputs.any_changed == 'true' && steps.validate-files.outputs.valid == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const invalidFiles = process.env.INVALID_FILES;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## ❌ Dosya Adı Hatası
+
+            Yanlış formatta dosyalar: **${invalidFiles}**
+
+            ### 📋 Doğru Format
+            \`ProblemX_OGRENCI_NO.cs\` (9 haneli öğrenci numarası)
+
+            **Örnek:** \`Problem1_210316011.cs\`
+
+            ---
+            ❌ **PR merge edilemez.** Lütfen dosya adını düzeltin.
+
+            ---
+            *GitHub Workshop Bot* 🤖`
+            });
+        env:
+          INVALID_FILES: ${{ steps.validate-files.outputs.invalid_files }}
+
+      - name: Post PR Comment - Test Failed
+        if: always() && steps.changed-files.outputs.any_changed == 'true' && steps.validate-files.outputs.valid == 'true' && steps.run-tests.outputs.all_passed == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const commentBody = fs.readFileSync('/tmp/comment_body.md', 'utf8');
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+
+      - name: Final Status Check
+        if: always() && steps.changed-files.outputs.any_changed == 'true'
+        run: |
+          if [ "${{ steps.validate-files.outputs.valid }}" = "false" ]; then
+            echo "❌ Dosya adı formatı yanlış!"
+            exit 1
+          fi
+          
+          if [ "${{ steps.run-tests.outputs.all_passed }}" = "false" ]; then
+            echo "❌ Bazı testler başarısız!"
+            exit 1
+          fi
+          
+          echo "✅ Tüm kontroller başarılı!"
